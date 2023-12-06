@@ -6,19 +6,22 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/alecthomas/kong"
-	log "github.com/sirupsen/logrus"
+	log "github.com/phuslu/log"
 )
 
-var Version = "unknown"
-var Buildinfos = "unknown"
-var Tag = "NO-TAG"
-var CommitID = "unknown"
-var Delta = ""
+var (
+	Version    = "unknown"
+	Buildinfos = "unknown"
+	Tag        = "NO-TAG"
+	CommitID   = "unknown"
+	Delta      = ""
+)
 
 type CLI struct {
 	Interface      []string `kong:"short='i',help='Two or more interfaces to use'"`
@@ -37,52 +40,49 @@ type CLI struct {
 	NoListen       bool     `kong:"help='Do not actively listen on UDP port(s)'"`
 }
 
-func init() {
-	log.SetFormatter(&log.TextFormatter{
-		DisableLevelTruncation: true,
-		PadLevelText:           true,
-		DisableTimestamp:       true,
-	})
-	log.SetOutput(os.Stderr)
-}
-
 func main() {
+	log.DefaultLogger = log.Logger{
+		Level:  log.InfoLevel,
+		Caller: 0,
+		Writer: &log.IOWriter{os.Stderr},
+	}
+
 	cli := parseArgs()
 
 	// handle our timeout
 	timeout := parseTimeout(cli.Timeout)
 
-	var fixed_ip = map[string][]string{}
+	fixed_ip := map[string][]string{}
 	for _, fip := range cli.FixedIp {
 		split := strings.Split(fip, "@")
 		if len(split) != 2 {
-			log.Fatalf("--fixed-ip %s is not in the correct format of <interface>@<ip>", fip)
+			log.Fatal().Msgf("--fixed-ip %s is not in the correct format of <interface>@<ip>", fip)
 		}
 		if net.ParseIP(split[1]) == nil {
-			log.Fatalf("--fixed-ip %s IP address is not a valid IPv4 address", fip)
+			log.Fatal().Msgf("--fixed-ip %s IP address is not a valid IPv4 address", fip)
 		}
 		if !stringInSlice(split[0], cli.Interface) {
-			log.Fatalf("--fixed-ip %s interface must be specified via --interface", fip)
+			log.Fatal().Msgf("--fixed-ip %s interface must be specified via --interface", fip)
 		}
 		fixed_ip[split[0]] = append(fixed_ip[split[0]], split[1])
 	}
 
 	// create our Listeners
-	var seenInterfaces = []string{}
-	var listeners = []Listen{}
+	seenInterfaces := []string{}
+	listeners := []Listen{}
 	for _, iface := range cli.Interface {
 		// check for duplicates
 		if stringPrefixInSlice(iface, seenInterfaces) {
-			log.Fatalf("Can't specify the same interface (%s) multiple times", iface)
+			log.Fatal().Msgf("Can't specify the same interface (%s) multiple times", iface)
 		}
 		seenInterfaces = append(seenInterfaces, iface)
 
 		netif, err := net.InterfaceByName(iface)
 		if err != nil {
-			log.WithError(err).Fatalf("Unable to find interface: %s", iface)
+			log.Fatal().Err(err).Msgf("Unable to find interface: %s", iface)
 		}
 
-		var promisc bool = (netif.Flags & net.FlagBroadcast) == 0
+		promisc := (netif.Flags & net.FlagBroadcast) == 0
 		l := newListener(netif, promisc, false, cli.Port, timeout, fixed_ip[iface])
 		listeners = append(listeners, l)
 	}
@@ -91,7 +91,7 @@ func main() {
 		// Create loopback listener
 		netif, err := net.InterfaceByName(getLoopback())
 		if err != nil {
-			log.WithError(err).Fatalf("Unable to find loopback interface")
+			log.Fatal().Err(err).Msg("unable to find loopback interface")
 		}
 
 		l := newListener(netif, false, true, cli.Port, timeout, []string{"127.0.0.1"})
@@ -104,13 +104,13 @@ func main() {
 		initializeInterface(&listeners[i])
 		if cli.Pcap {
 			if fName, err := listeners[i].OpenWriter(cli.PcapPath, In); err != nil {
-				log.Fatalf("Unable to open pcap file %s: %s", fName, err.Error())
+				log.Fatal().Err(err).Str("pcap file", fName).Msg("unable to open")
 			}
 			if fName, err := listeners[i].OpenWriter(cli.PcapPath, Out); err != nil {
-				log.Fatalf("Unable to open pcap file %s: %s", fName, err.Error())
+				log.Fatal().Err(err).Str("pcap file", fName).Msg("unable to open")
 			}
 			if fName, err := listeners[i].OpenWriter(cli.PcapPath, InOut); err != nil {
-				log.Fatalf("Unable to open pcap file %s: %s", fName, err.Error())
+				log.Fatal().Err(err).Str("pcap file", fName).Msg("unable to open")
 			}
 		}
 		listeners[i].clientTTL = ttl
@@ -121,7 +121,7 @@ func main() {
 	if !cli.NoListen {
 		for _, l := range listeners {
 			if err := l.SinkUdpPackets(); err != nil {
-				log.WithError(err).Fatalf("Unable to init SinkUdpPackets")
+				log.Fatal().Err(err).Msg("unable to init SinkUdpPackets")
 			}
 		}
 	}
@@ -133,7 +133,7 @@ func main() {
 	// start handling packets
 	var wg sync.WaitGroup
 	spf := SendPktFeed{}
-	log.Debug("Initialization complete!")
+	log.Debug().Msg("initialization complete!")
 	for i := range listeners {
 		wg.Add(1)
 		go listeners[i].handlePackets(&spf, &wg)
@@ -165,21 +165,23 @@ func parseArgs() CLI {
 	}
 
 	// Setup Logging
+	var logLevel log.Level
 	switch cli.Level {
 	case "trace":
-		log.SetLevel(log.TraceLevel)
+		logLevel = log.TraceLevel
 	case "debug":
-		log.SetLevel(log.DebugLevel)
+		logLevel = log.DebugLevel
 	case "warn":
-		log.SetLevel(log.WarnLevel)
+		logLevel = log.WarnLevel
 	case "info":
-		log.SetLevel(log.InfoLevel)
+		logLevel = log.InfoLevel
 	case "error":
-		log.SetLevel(log.ErrorLevel)
+		logLevel = log.ErrorLevel
 	}
 
+	caller := 0
 	if cli.LogLines {
-		log.SetReportCaller(true)
+		caller = 1
 	}
 
 	if cli.ListInterfaces {
@@ -188,18 +190,47 @@ func parseArgs() CLI {
 	}
 
 	if len(cli.Interface) < 2 {
-		log.Fatalf("Please specify two or more --interface")
+		log.Fatal().Msg("please specify two or more --interface")
 	}
 	if len(cli.Port) < 1 {
-		log.Fatalf("Please specify one or more --port")
+		log.Fatal().Msg("please specify one or more --port")
 	}
 
-	if cli.Logfile != "stderr" {
-		file, err := os.OpenFile(cli.Logfile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-		if err != nil {
-			log.WithError(err).Fatalf("Unable to open log file: %s", cli.Logfile)
+	var writer log.Writer
+	switch {
+	case cli.Logfile != "stderr":
+		writer = &log.FileWriter{
+			Filename:     cli.Logfile,
+			MaxSize:      500 * 1024 * 1024,
+			FileMode:     0600,
+			MaxBackups:   7,
+			EnsureFolder: true,
+			LocalTime:    true,
+			Cleaner: func(filename string, _ int, matches []os.FileInfo) {
+				dir := filepath.Dir(filename)
+				var total int64
+				for i := len(matches) - 1; i >= 0; i-- {
+					total += matches[i].Size()
+					if total > 5*1024*1024*1024 {
+						os.Remove(filepath.Join(dir, matches[i].Name()))
+					}
+				}
+			},
 		}
-		log.SetOutput(file)
+	default:
+		writer = &log.ConsoleWriter{
+			ColorOutput:    true,
+			QuoteString:    true,
+			EndWithMessage: true,
+		}
+	}
+
+	log.DefaultLogger = log.Logger{
+		Level:      logLevel,
+		Caller:     caller,
+		TimeField:  "date",
+		TimeFormat: "2006-01-02",
+		Writer:     writer,
 	}
 
 	return cli
