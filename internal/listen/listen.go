@@ -1,4 +1,4 @@
-package main
+package listen
 
 import (
 	"encoding/binary"
@@ -16,6 +16,8 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/pcapgo"
 	log "github.com/phuslu/log"
+
+	"github.com/synfinatic/udp-proxy-2020/internal/send"
 )
 
 const (
@@ -25,20 +27,20 @@ const (
 
 // Struct containing everything for an interface
 type Listen struct {
-	iname     string               // interface to use
+	IName     string               // interface to use
 	netif     *net.Interface       // interface descriptor
-	ports     []int32              // port(s) we listen for packets
+	Ports     []int32              // port(s) we listen for packets
 	ipaddr    string               // dstip we send packets to
-	promisc   bool                 // do we enable promisc on this interface?
-	handle    *pcap.Handle         // gopacket.pcap handle
+	Promisc   bool                 // do we enable promisc on this interface?
+	Handle    *pcap.Handle         // gopacket.pcap handle
 	writer    *pcapgo.Writer       // in and outbound write packet handle
 	inwriter  *pcapgo.Writer       // inbound write packet handle
 	outwriter *pcapgo.Writer       // outbound write packet handle
 	sendOnly  bool                 // Only send on this interface
 	localIP   net.IP               // the local interface IP
-	timeout   time.Duration        // timeout for loop
-	clientTTL time.Duration        // ttl for client cache
-	sendpkt   chan Send            // channel used to receive packets we need to send
+	Timeout   time.Duration        // timeout for loop
+	ClientTTL time.Duration        // ttl for client cache
+	Sendpkt   chan send.Send       // channel used to receive packets we need to send
 	clients   map[string]time.Time // keep track of clients for non-promisc interfaces
 }
 
@@ -51,7 +53,7 @@ var validLinkTypes = []layers.LinkType{
 }
 
 // Creates a Listen struct for the given interface, promisc mode, udp sniff ports and timeout
-func newListener(
+func NewListener(
 	netif *net.Interface,
 	promisc, sendOnly bool,
 	ports []int32,
@@ -104,22 +106,22 @@ func newListener(
 		clients[ip] = time.Time{} // zero value
 	}
 
-	new := Listen{
-		iname:    netif.Name,
+	newL := Listen{
+		IName:    netif.Name,
 		netif:    netif,
 		localIP:  localip,
 		sendOnly: sendOnly,
-		ports:    ports,
+		Ports:    ports,
 		ipaddr:   bcastaddr,
-		timeout:  to,
-		promisc:  promisc,
-		handle:   nil,
-		sendpkt:  make(chan Send, SEND_BUFFER_SIZE),
+		Timeout:  to,
+		Promisc:  promisc,
+		Handle:   nil,
+		Sendpkt:  make(chan send.Send, SEND_BUFFER_SIZE),
 		clients:  clients,
 	}
 
-	log.Debug().Msgf("Listen: %s", spew.Sdump(new))
-	return new
+	log.Debug().Msgf("Listen: %s", spew.Sdump(newL))
+	return newL
 }
 
 type Direction string
@@ -133,7 +135,7 @@ const (
 // OpenWrite will open the write file pcap handle
 func (l *Listen) OpenWriter(path string, dir Direction) (string, error) {
 	var err error
-	fName := fmt.Sprintf("udp-proxy-%s-%s.pcap", dir, l.iname)
+	fName := fmt.Sprintf("udp-proxy-%s-%s.pcap", dir, l.IName)
 	filePath := filepath.Join(path, fName)
 	f, err := os.Create(filePath)
 	if err != nil {
@@ -142,34 +144,35 @@ func (l *Listen) OpenWriter(path string, dir Direction) (string, error) {
 	switch dir {
 	case "in":
 		l.inwriter = pcapgo.NewWriter(f)
-		return fName, l.inwriter.WriteFileHeader(65536, l.handle.LinkType())
+		return fName, l.inwriter.WriteFileHeader(65536, l.Handle.LinkType())
 	case "out":
 		l.outwriter = pcapgo.NewWriter(f)
-		return fName, l.outwriter.WriteFileHeader(65536, l.handle.LinkType())
+		return fName, l.outwriter.WriteFileHeader(65536, l.Handle.LinkType())
 	case "inout":
 		l.writer = pcapgo.NewWriter(f)
-		return fName, l.writer.WriteFileHeader(65536, l.handle.LinkType())
+		return fName, l.writer.WriteFileHeader(65536, l.Handle.LinkType())
 	}
 	return fName, fmt.Errorf("invalid direction: %s", dir)
 }
 
 // Our goroutine for processing packets
-func (l *Listen) handlePackets(s *SendPktFeed, wg *sync.WaitGroup) {
+func (l *Listen) HandlePackets(s *send.SendPktFeed, wg *sync.WaitGroup) {
 	// add ourself as a sender
-	s.RegisterSender(l.sendpkt, l.iname)
+	s.RegisterSender(l.Sendpkt, l.IName)
 
 	// get packets from libpcap
-	packetSource := gopacket.NewPacketSource(l.handle, l.handle.LinkType())
+	packetSource := gopacket.NewPacketSource(l.Handle, l.Handle.LinkType())
 	packets := packetSource.Packets()
 
 	// This timer is nice for debugging
 	d, _ := time.ParseDuration("5s")
-	ticker := time.Tick(d)
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
 
 	// loop forever and ever and ever
 	for {
 		select {
-		case s := <-l.sendpkt: // packet arrived from another interface
+		case s := <-l.Sendpkt: // packet arrived from another interface
 			l.sendPackets(s)
 		case packet := <-packets: // packet arrived on this interfaces
 			// ignore packets on this interface??
@@ -180,19 +183,19 @@ func (l *Listen) handlePackets(s *SendPktFeed, wg *sync.WaitGroup) {
 			// is it legit?
 			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil ||
 				packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
-				log.Warn().Msgf("%s: Invalid packet", l.iname)
+				log.Warn().Msgf("%s: Invalid packet", l.IName)
 				continue
 			} else if errx := packet.ErrorLayer(); errx != nil {
-				log.Error().Msgf("%s: Unable to decode: %s", l.iname, errx.Error())
+				log.Error().Msgf("%s: Unable to decode: %s", l.IName, errx.Error())
 			}
 
 			// if our interface is non-promisc, learn the client IP
-			if l.promisc {
+			if l.Promisc {
 				l.learnClientIP(packet)
 			}
 
-			log.Debug().Msgf("%s: received packet and forwarding onto other interfaces", l.iname)
-			s.Send(packet, l.iname, l.handle.LinkType())
+			log.Debug().Msgf("%s: received packet and forwarding onto other interfaces", l.IName)
+			s.Send(packet, l.IName, l.Handle.LinkType())
 
 			// write to pcap?
 			if l.inwriter != nil {
@@ -212,13 +215,13 @@ func (l *Listen) handlePackets(s *SendPktFeed, wg *sync.WaitGroup) {
 				}
 			}
 
-		case <-ticker: // our timer
-			log.Debug().Msgf("handlePackets(%s) ticker", l.iname)
+		case <-ticker.C: // our timer
+			log.Debug().Msgf("handlePackets(%s) ticker", l.IName)
 			// clean client cache
 			for k, v := range l.clients {
 				// zero is hard code values
 				if !v.IsZero() && v.Before(time.Now()) {
-					log.Debug().Msgf("%s removing %s after %dsec", l.iname, k, l.clientTTL)
+					log.Debug().Msgf("%s removing %s after %dsec", l.IName, k, l.ClientTTL)
 					delete(l.clients, k)
 				}
 			}
@@ -226,14 +229,14 @@ func (l *Listen) handlePackets(s *SendPktFeed, wg *sync.WaitGroup) {
 	}
 }
 
-func (l *Listen) decodePacket(sndpkt Send, eth *layers.Ethernet, loop *layers.Loopback,
+func (l *Listen) decodePacket(sndpkt send.Send, eth *layers.Ethernet, loop *layers.Loopback,
 	ip4 *layers.IPv4, udp *layers.UDP, payload *gopacket.Payload,
 ) bool {
 	var parser *gopacket.DecodingLayerParser
 
-	log.Debug().Msgf("processing packet from %s on %s", sndpkt.srcif, l.iname)
+	log.Debug().Msgf("processing packet from %s on %s", sndpkt.Srcif, l.IName)
 
-	switch sndpkt.linkType.String() {
+	switch sndpkt.LinkType.String() {
 	case layers.LinkTypeNull.String(), layers.LinkTypeLoop.String():
 		parser = gopacket.NewDecodingLayerParser(layers.LayerTypeLoopback, loop, ip4, udp, payload)
 	case layers.LinkTypeEthernet.String():
@@ -241,13 +244,13 @@ func (l *Listen) decodePacket(sndpkt Send, eth *layers.Ethernet, loop *layers.Lo
 	case layers.LinkTypeRaw.String():
 		parser = gopacket.NewDecodingLayerParser(layers.LayerTypeIPv4, ip4, udp, payload)
 	default:
-		log.Fatal().Msgf("Unsupported source linktype: %s", sndpkt.linkType.String())
+		log.Fatal().Msgf("Unsupported source linktype: %s", sndpkt.LinkType.String())
 	}
 
 	// try decoding our packet
 	decoded := []gopacket.LayerType{}
-	if err := parser.DecodeLayers(sndpkt.packet.Data(), &decoded); err != nil {
-		log.Warn().Msgf("Unable to decode packet from %s: %s", sndpkt.srcif, err)
+	if err := parser.DecodeLayers(sndpkt.Packet.Data(), &decoded); err != nil {
+		log.Warn().Msgf("Unable to decode packet from %s: %s", sndpkt.Srcif, err)
 		return false
 	}
 
@@ -263,7 +266,7 @@ func (l *Listen) decodePacket(sndpkt Send, eth *layers.Ethernet, loop *layers.Lo
 		}
 	}
 	if !found_udp || !found_ipv4 {
-		log.Warn().Msgf("Packet from %s did not contain a IPv4/UDP packet", sndpkt.srcif)
+		log.Warn().Msgf("Packet from %s did not contain a IPv4/UDP packet", sndpkt.Srcif)
 		return false
 	}
 
@@ -271,7 +274,7 @@ func (l *Listen) decodePacket(sndpkt Send, eth *layers.Ethernet, loop *layers.Lo
 }
 
 // Does the heavy lifting of editing & sending the packet onwards
-func (l *Listen) sendPackets(sndpkt Send) {
+func (l *Listen) sendPackets(sndpkt send.Send) {
 	var eth layers.Ethernet
 	var loop layers.Loopback // BSD NULL/Loopback used for OpenVPN tunnels/etc
 	var ip4 layers.IPv4      // we only support v4
@@ -283,30 +286,37 @@ func (l *Listen) sendPackets(sndpkt Send) {
 		return
 	}
 
-	if !l.promisc {
+	if !l.Promisc {
 		// send one packet to broadcast IP
 		dstip := net.ParseIP(l.ipaddr).To4()
 		if bytes, err := l.sendPacket(sndpkt, dstip, eth, loop, ip4, udp, payload); err != nil {
 			log.Warn().Msgf("Unable to send %d bytes from %s out %s: %s",
-				bytes, sndpkt.srcif, l.iname, err)
+				bytes, sndpkt.Srcif, l.IName, err)
 		}
 	} else {
 		// sent packet to every client
 		if len(l.clients) == 0 {
-			log.Debug().Msgf("%s: Unable to send packet; no discovered clients", l.iname)
+			log.Debug().Msgf("%s: Unable to send packet; no discovered clients", l.IName)
 		}
 		for ip := range l.clients {
 			dstip := net.ParseIP(ip).To4()
 			if bytes, err := l.sendPacket(sndpkt, dstip, eth, loop, ip4, udp, payload); err != nil {
 				log.Warn().Msgf("Unable to send %d bytes from %s out %s: %s",
-					bytes, sndpkt.srcif, l.iname, err)
+					bytes, sndpkt.Srcif, l.IName, err)
 			}
 		}
 	}
 }
 
-func (l *Listen) buildPacket(sndpkt Send, dstip net.IP, eth layers.Ethernet, loop layers.Loopback,
-	ip4 layers.IPv4, udp layers.UDP, payload gopacket.Payload, opts gopacket.SerializeOptions,
+func (l *Listen) buildPacket(
+	sndpkt send.Send,
+	dstip net.IP,
+	eth layers.Ethernet,
+	loop layers.Loopback,
+	ip4 layers.IPv4,
+	udp layers.UDP,
+	payload gopacket.Payload,
+	opts gopacket.SerializeOptions,
 ) gopacket.SerializeBuffer {
 	// Build our packet to send
 	buffer := gopacket.NewSerializeBuffer()
@@ -355,8 +365,14 @@ func (l *Listen) buildPacket(sndpkt Send, dstip net.IP, eth layers.Ethernet, loo
 	return buffer
 }
 
-func (l *Listen) sendPacket(sndpkt Send, dstip net.IP, eth layers.Ethernet, loop layers.Loopback,
-	ip4 layers.IPv4, udp layers.UDP, payload gopacket.Payload,
+func (l *Listen) sendPacket(
+	sndpkt send.Send,
+	dstip net.IP,
+	eth layers.Ethernet,
+	loop layers.Loopback,
+	ip4 layers.IPv4,
+	udp layers.UDP,
+	payload gopacket.Payload,
 ) (int, error) {
 	opts := gopacket.SerializeOptions{
 		FixLengths:       false,
@@ -365,7 +381,7 @@ func (l *Listen) sendPacket(sndpkt Send, dstip net.IP, eth layers.Ethernet, loop
 	buffer := l.buildPacket(sndpkt, dstip, eth, loop, ip4, udp, payload, opts)
 
 	// Add our L2 header to the buffer
-	switch l.handle.LinkType().String() {
+	switch l.Handle.LinkType().String() {
 	case layers.LinkTypeNull.String(), layers.LinkTypeLoop.String():
 		loop := layers.Loopback{
 			Family: layers.ProtocolFamilyIPv4,
@@ -387,15 +403,15 @@ func (l *Listen) sendPacket(sndpkt Send, dstip net.IP, eth layers.Ethernet, loop
 	case layers.LinkTypeRaw.String():
 		// no L2 header
 	default:
-		log.Warn().Msgf("Unsupported linktype: %s", l.handle.LinkType().String())
+		log.Warn().Msgf("Unsupported linktype: %s", l.Handle.LinkType().String())
 	}
 
 	outgoingPacket := buffer.Bytes()
-	log.Debug().Msgf("%s => %s: packet len: %d", l.iname, dstip.String(), len(outgoingPacket))
+	log.Debug().Msgf("%s => %s: packet len: %d", l.IName, dstip.String(), len(outgoingPacket))
 
 	// write to pcap?
 	if l.outwriter != nil {
-		md := sndpkt.packet.Metadata()
+		md := sndpkt.Packet.Metadata()
 		ci := gopacket.CaptureInfo{
 			Timestamp:      md.Timestamp,
 			CaptureLength:  len(outgoingPacket),
@@ -411,7 +427,7 @@ func (l *Listen) sendPacket(sndpkt Send, dstip net.IP, eth layers.Ethernet, loop
 		}
 	}
 
-	return len(outgoingPacket), l.handle.WritePacketData(outgoingPacket)
+	return len(outgoingPacket), l.Handle.WritePacketData(outgoingPacket)
 }
 
 func (l *Listen) learnClientIP(packet gopacket.Packet) {
@@ -422,7 +438,7 @@ func (l *Listen) learnClientIP(packet gopacket.Packet) {
 	var payload gopacket.Payload
 	var parser *gopacket.DecodingLayerParser
 
-	switch l.handle.LinkType().String() {
+	switch l.Handle.LinkType().String() {
 	case layers.LinkTypeNull.String(), layers.LinkTypeLoop.String():
 		parser = gopacket.NewDecodingLayerParser(
 			layers.LayerTypeLoopback,
@@ -442,12 +458,12 @@ func (l *Listen) learnClientIP(packet gopacket.Packet) {
 	case layers.LinkTypeRaw.String():
 		parser = gopacket.NewDecodingLayerParser(layers.LayerTypeIPv4, &ip4, &udp, &payload)
 	default:
-		log.Fatal().Msgf("Unsupported source linktype: %s", l.handle.LinkType().String())
+		log.Fatal().Msgf("Unsupported source linktype: %s", l.Handle.LinkType().String())
 	}
 
 	decoded := []gopacket.LayerType{}
 	if err := parser.DecodeLayers(packet.Data(), &decoded); err != nil {
-		log.Debug().Msgf("Unable to decoded client IP on %s: %s", l.iname, err)
+		log.Debug().Msgf("Unable to decoded client IP on %s: %s", l.IName, err)
 	}
 
 	found_ipv4 := false
@@ -462,14 +478,14 @@ func (l *Listen) learnClientIP(packet gopacket.Packet) {
 	if found_ipv4 {
 		val, exists := l.clients[ip4.SrcIP.String()]
 		if !exists || !val.IsZero() {
-			l.clients[ip4.SrcIP.String()] = time.Now().Add(l.clientTTL)
-			log.Debug().Msgf("%s: Learned client IP: %s", l.iname, ip4.SrcIP.String())
+			l.clients[ip4.SrcIP.String()] = time.Now().Add(l.ClientTTL)
+			log.Debug().Msgf("%s: Learned client IP: %s", l.IName, ip4.SrcIP.String())
 		}
 	}
 }
 
 // Returns if the provided layertype is valid
-func isValidLayerType(layertype layers.LinkType) bool {
+func IsValidLayerType(layertype layers.LinkType) bool {
 	for _, b := range validLinkTypes {
 		if strings.Compare(b.String(), layertype.String()) == 0 {
 			return true
@@ -494,7 +510,7 @@ func (l *Listen) SinkUdpPackets() error {
 			continue
 		}
 		ipport := strings.Split(addrs, "/")
-		for _, port := range l.ports {
+		for _, port := range l.Ports {
 			udp := net.UDPAddr{
 				IP:   net.ParseIP(ipport[0]),
 				Port: int(port),

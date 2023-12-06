@@ -1,65 +1,68 @@
-package main
+package interfaces
 
 import (
 	"fmt"
 
 	"github.com/google/gopacket/pcap"
 	log "github.com/phuslu/log"
+
+	"github.com/synfinatic/udp-proxy-2020/internal/listen"
+	"github.com/synfinatic/udp-proxy-2020/internal/utils"
 )
 
 // Interfaces is a map between interface name and pcap data structure
 var Interfaces = map[string]pcap.Interface{}
 
-func initializeInterface(l *Listen) {
+func InitializeInterface(l *listen.Listen) {
 	// find our interface via libpcap
 	getConfiguredInterfaces()
-	if len(Interfaces[l.iname].Addresses) == 0 {
-		log.Fatal().Msgf("%s is not configured", l.iname)
+	if len(Interfaces[l.IName].Addresses) == 0 {
+		log.Fatal().Msgf("%s is not configured", l.IName)
 	}
 
 	// configure libpcap listener
-	inactive, err := pcap.NewInactiveHandle(l.iname)
+	inactive, err := pcap.NewInactiveHandle(l.IName)
 	if err != nil {
-		log.Fatal().Msgf("%s: %s", l.iname, err)
+		log.Fatal().Msgf("%s: %s", l.IName, err)
 	}
 	defer inactive.CleanUp()
 
 	// set our timeout
-	if err = inactive.SetTimeout(l.timeout); err != nil {
-		log.Fatal().Msgf("%s: %s", l.iname, err)
+	if err = inactive.SetTimeout(l.Timeout); err != nil {
+		log.Fatal().Msgf("%s: %s", l.IName, err)
 	}
 
 	// Promiscuous mode on/off
-	if err = inactive.SetPromisc(l.promisc); err != nil {
-		log.Fatal().Msgf("%s: %s", l.iname, err)
+	if err = inactive.SetPromisc(l.Promisc); err != nil {
+		log.Fatal().Msgf("%s: %s", l.IName, err)
 	}
 	// Get the entire packet
 	if err = inactive.SetSnapLen(9000); err != nil {
-		log.Fatal().Msgf("%s: %s", l.iname, err)
+		log.Fatal().Msgf("%s: %s", l.IName, err)
 	}
 
 	// activate libpcap handle
-	if l.handle, err = inactive.Activate(); err != nil {
-		log.Fatal().Msgf("%s: %s", l.iname, err)
+	if l.Handle, err = inactive.Activate(); err != nil {
+		log.Fatal().Msgf("%s: %s", l.IName, err)
 	}
 
-	if !isValidLayerType(l.handle.LinkType()) {
-		log.Fatal().Msgf("%s: has an invalid layer type: %s", l.iname, l.handle.LinkType().String())
+	if !listen.IsValidLayerType(l.Handle.LinkType()) {
+		log.Fatal().Msgf("%s: has an invalid layer type: %s", l.IName, l.Handle.LinkType().String())
 	}
 
 	// set our BPF filter
-	bpf_filter := buildBPFFilter(l.ports, Interfaces[l.iname].Addresses, l.promisc)
-	log.Debug().Msgf("%s: applying BPF Filter: %s", l.iname, bpf_filter)
-	if err = l.handle.SetBPFFilter(bpf_filter); err != nil {
-		log.Fatal().Msgf("%s: %s", l.iname, err)
+	bpf_filter := utils.BuildBPFFilter(l.Ports, Interfaces[l.IName].Addresses, l.Promisc)
+	log.Debug().Msgf("%s: applying BPF Filter: %s", l.IName, bpf_filter)
+	if err = l.Handle.SetBPFFilter(bpf_filter); err != nil {
+		log.Fatal().Msgf("%s: %s", l.IName, err)
 	}
 
 	// just inbound packets
-	if err = l.handle.SetDirection(pcap.DirectionIn); err != nil {
-		log.Fatal().Msgf("%s: %s", l.iname, err)
+	if err = l.Handle.SetDirection(pcap.DirectionIn); err != nil {
+		log.Fatal().Msgf("%s: %s", l.IName, err)
 	}
 
-	log.Debug().Msgf("Opened pcap handle on %s", l.iname)
+	log.Debug().Msgf("Opened pcap handle on %s", l.IName)
 }
 
 // Uses libpcap to get a list of configured interfaces
@@ -81,7 +84,7 @@ func getConfiguredInterfaces() {
 }
 
 // Print out a list of all the interfaces that libpcap sees
-func listInterfaces() {
+func ListInterfaces() {
 	getConfiguredInterfaces()
 	for k, v := range Interfaces {
 		fmt.Printf("Interface: %s\n", k)
@@ -102,7 +105,7 @@ func listInterfaces() {
 }
 
 // getLoopback returns the name of the loopback interface
-func getLoopback() string {
+func GetLoopback() string {
 	getConfiguredInterfaces()
 	for k, v := range Interfaces {
 		for _, a := range v.Addresses {

@@ -13,6 +13,11 @@ import (
 
 	"github.com/alecthomas/kong"
 	log "github.com/phuslu/log"
+
+	"github.com/synfinatic/udp-proxy-2020/internal/interfaces"
+	"github.com/synfinatic/udp-proxy-2020/internal/listen"
+	"github.com/synfinatic/udp-proxy-2020/internal/send"
+	"github.com/synfinatic/udp-proxy-2020/internal/utils"
 )
 
 var (
@@ -50,7 +55,8 @@ func main() {
 	cli := parseArgs()
 
 	// handle our timeout
-	timeout := parseTimeout(cli.Timeout)
+
+	timeout := utils.ParseTimeout(cli.Timeout)
 
 	fixed_ip := map[string][]string{}
 	for _, fip := range cli.FixedIp {
@@ -61,7 +67,7 @@ func main() {
 		if net.ParseIP(split[1]) == nil {
 			log.Fatal().Msgf("--fixed-ip %s IP address is not a valid IPv4 address", fip)
 		}
-		if !stringInSlice(split[0], cli.Interface) {
+		if !utils.StringInSlice(split[0], cli.Interface) {
 			log.Fatal().Msgf("--fixed-ip %s interface must be specified via --interface", fip)
 		}
 		fixed_ip[split[0]] = append(fixed_ip[split[0]], split[1])
@@ -69,10 +75,10 @@ func main() {
 
 	// create our Listeners
 	seenInterfaces := []string{}
-	listeners := []Listen{}
+	listeners := []listen.Listen{}
 	for _, iface := range cli.Interface {
 		// check for duplicates
-		if stringPrefixInSlice(iface, seenInterfaces) {
+		if utils.StringPrefixInSlice(iface, seenInterfaces) {
 			log.Fatal().Msgf("Can't specify the same interface (%s) multiple times", iface)
 		}
 		seenInterfaces = append(seenInterfaces, iface)
@@ -83,38 +89,38 @@ func main() {
 		}
 
 		promisc := (netif.Flags & net.FlagBroadcast) == 0
-		l := newListener(netif, promisc, false, cli.Port, timeout, fixed_ip[iface])
+		l := listen.NewListener(netif, promisc, false, cli.Port, timeout, fixed_ip[iface])
 		listeners = append(listeners, l)
 	}
 
 	if cli.DeliverLocal {
 		// Create loopback listener
-		netif, err := net.InterfaceByName(getLoopback())
+		netif, err := net.InterfaceByName(interfaces.GetLoopback())
 		if err != nil {
 			log.Fatal().Err(err).Msg("unable to find loopback interface")
 		}
 
-		l := newListener(netif, false, true, cli.Port, timeout, []string{"127.0.0.1"})
+		l := listen.NewListener(netif, false, true, cli.Port, timeout, []string{"127.0.0.1"})
 		listeners = append(listeners, l)
 	}
 
 	// init each listener
 	ttl, _ := time.ParseDuration(fmt.Sprintf("%dm", cli.CacheTTL))
 	for i := range listeners {
-		initializeInterface(&listeners[i])
+		interfaces.InitializeInterface(&listeners[i])
 		if cli.Pcap {
-			if fName, err := listeners[i].OpenWriter(cli.PcapPath, In); err != nil {
+			if fName, err := listeners[i].OpenWriter(cli.PcapPath, listen.In); err != nil {
 				log.Fatal().Err(err).Str("pcap file", fName).Msg("unable to open")
 			}
-			if fName, err := listeners[i].OpenWriter(cli.PcapPath, Out); err != nil {
+			if fName, err := listeners[i].OpenWriter(cli.PcapPath, listen.Out); err != nil {
 				log.Fatal().Err(err).Str("pcap file", fName).Msg("unable to open")
 			}
-			if fName, err := listeners[i].OpenWriter(cli.PcapPath, InOut); err != nil {
+			if fName, err := listeners[i].OpenWriter(cli.PcapPath, listen.InOut); err != nil {
 				log.Fatal().Err(err).Str("pcap file", fName).Msg("unable to open")
 			}
 		}
-		listeners[i].clientTTL = ttl
-		defer listeners[i].handle.Close()
+		listeners[i].ClientTTL = ttl
+		defer listeners[i].Handle.Close()
 	}
 
 	// Sink broadcast messages
@@ -132,11 +138,11 @@ func main() {
 
 	// start handling packets
 	var wg sync.WaitGroup
-	spf := SendPktFeed{}
+	spf := send.SendPktFeed{}
 	log.Debug().Msg("initialization complete!")
 	for i := range listeners {
 		wg.Add(1)
-		go listeners[i].handlePackets(&spf, &wg)
+		go listeners[i].HandlePackets(&spf, &wg)
 	}
 	wg.Wait()
 }
@@ -185,7 +191,7 @@ func parseArgs() CLI {
 	}
 
 	if cli.ListInterfaces {
-		listInterfaces()
+		interfaces.ListInterfaces()
 		os.Exit(0)
 	}
 

@@ -1,4 +1,4 @@
-package main
+package utils
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ func StringInSlice(a string, list []string) bool {
 }
 
 // Check to see if the string prefix is in the slice
-func stringPrefixInSlice(a string, list []string) bool {
+func StringPrefixInSlice(a string, list []string) bool {
 	for _, b := range list {
 		if strings.HasPrefix(b, a) {
 			return true
@@ -31,7 +31,7 @@ func stringPrefixInSlice(a string, list []string) bool {
 }
 
 // takes a list of ports and builds our BPF filter
-func buildBPFFilter(ports []int32, addresses []pcap.InterfaceAddress, _ bool) string {
+func BuildBPFFilter(ports []int32, addresses []pcap.InterfaceAddress, _ bool) string {
 	if len(ports) < 1 {
 		log.Fatal().Msg("--port must be specified one or more times")
 	}

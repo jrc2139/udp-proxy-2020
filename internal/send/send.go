@@ -1,4 +1,4 @@
-package main
+package send
 
 import (
 	"strings"
@@ -11,9 +11,9 @@ import (
 
 // Send is a struct for defining outgoing packets
 type Send struct {
-	packet   gopacket.Packet // packet data
-	srcif    string          // interface it came in on
-	linkType layers.LinkType // pcap LinkType of source interface
+	Packet   gopacket.Packet // packet data
+	Srcif    string          // interface it came in on
+	LinkType layers.LinkType // pcap LinkType of source interface
 }
 
 // SendPktFeed is a struct for collecting all channels to send packets
@@ -30,7 +30,7 @@ func (s *SendPktFeed) Send(p gopacket.Packet, srcif string, linkType layers.Link
 			continue
 		}
 		log.Debug().Msgf("%s: sending out because we're not %s", thisif, srcif)
-		send <- Send{packet: p, srcif: srcif, linkType: linkType}
+		send <- Send{Packet: p, Srcif: srcif, LinkType: linkType}
 	}
 	s.lock.Unlock()
 }
