@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 	"sync"
@@ -123,6 +125,10 @@ func main() {
 			}
 		}
 	}
+
+	go func() {
+		log.Debug(http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	// start handling packets
 	var wg sync.WaitGroup
