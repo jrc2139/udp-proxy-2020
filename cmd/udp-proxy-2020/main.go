@@ -127,7 +127,7 @@ func main() {
 	}
 
 	go func() {
-		log.Debug(http.ListenAndServe("localhost:6060", nil))
+		log.Fatal().Err(http.ListenAndServe("localhost:6060", nil)).Msg("listen failed")
 	}()
 
 	// start handling packets
