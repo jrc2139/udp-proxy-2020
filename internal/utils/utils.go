@@ -11,7 +11,7 @@ import (
 )
 
 // Check to see if the string is in the slice
-func stringInSlice(a string, list []string) bool {
+func StringInSlice(a string, list []string) bool {
 	for _, b := range list {
 		if b == a {
 			return true
@@ -66,7 +66,7 @@ func buildBPFFilter(ports []int32, addresses []pcap.InterfaceAddress, _ bool) st
 	return bpf_filter
 }
 
-func parseTimeout(timeout int64) time.Duration {
+func ParseTimeout(timeout int64) time.Duration {
 	d := fmt.Sprintf("%dms", timeout)
 	to, err := time.ParseDuration(d)
 	if err != nil {
