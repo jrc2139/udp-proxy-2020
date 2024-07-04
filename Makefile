@@ -1,6 +1,7 @@
 DIST_DIR ?= dist/
 GOOS ?= $(shell uname -s | tr "[:upper:]" "[:lower:]")
 GOARCH ?= $(shell uname -m | sed -E 's/x86_64/amd64/')
+GO_VERSION := $(shell grep '^go ' go.mod | cut -d' ' -f2)
 BUILDINFOSDET ?=
 UDP_PROXY_2020_ARGS ?=
 
@@ -60,7 +61,7 @@ $(OUTPUT_NAME): ./cmd/udp-proxy-2020/*.go .prepare
 
 .PHONY: build-race
 build-race: .prepare ## Build race detection binary
-	go build -race -ldflags='$(LDFLAGS)' -o $(OUTPUT_NAME) ./cmd/udp-proxy-2020/...
+	go build -race -ldflags='$(LDFLAGS)' -trimpath -o $(OUTPUT_NAME) ./cmd/udp-proxy-2020/...
 
 debug: .prepare ## Run debug in dlv
 	dlv debug ./cmd
@@ -143,11 +144,12 @@ $(LINUX_AMD64_S_NAME): .prepare
 .PHONY: .vagrant-check
 .vagrant-check:
 	@which vagrant >/dev/null || "Please install Vagrant: https://www.vagrantup.com"
-	@which VBoxManage >/dev/null || "Please install VirtualBox: https://www.virtualbox.org"
+	# @which VBoxManage >/dev/null || "Please install VirtualBox: https://www.virtualbox.org"
 
 freebsd: .vagrant-check ## Build all FreeBSD/pfSense binaries using Vagrant VM
-	vagrant provision && vagrant up && vagrant ssh-config >.vagrant-ssh && \
-		scp -F .vagrant-ssh default:$(PROJECT_NAME)/dist/*freebsd* dist/
+	mkdir -p dist
+	go_version=$(GO_VERSION) vagrant up --provision && vagrant ssh-config >.vagrant-ssh && \
+		scp -rF .vagrant-ssh default:$(PROJECT_NAME)/dist/*freebsd* dist/
 
 freebsd-shell: ## Get a shell in FreeBSD Vagrant VM
 	vagrant ssh
@@ -162,7 +164,7 @@ FREEBSD_AMD64_S_NAME := $(DIST_DIR)$(PROJECT_NAME)-$(PROJECT_VERSION)-freebsd-am
 FREEBSD_ARM64_S_NAME := $(DIST_DIR)$(PROJECT_NAME)-$(PROJECT_VERSION)-freebsd-arm64
 FREEBSD_ARMV7_S_NAME := $(DIST_DIR)$(PROJECT_NAME)-$(PROJECT_VERSION)-freebsd-armv7
 
-freebsd-binaries: freebsd-amd64 freebsd-arm64 freebsd-armv7 ## no-help
+freebsd-binaries: freebsd-amd64 # freebsd-arm64 freebsd-armv7 ## no-help
 freebsd-amd64: $(FREEBSD_AMD64_S_NAME) ## no-help
 freebsd-arm64: $(FREEBSD_ARM64_S_NAME) ## no-help
 freebsd-armv7: $(FREEBSD_ARMV7_S_NAME) ## no-help
@@ -194,8 +196,8 @@ freebsd-armv7: $(FREEBSD_ARMV7_S_NAME) ## no-help
 $(FREEBSD_AMD64_S_NAME): .freebsd-amd64-cross
 	GOOS=freebsd GOARCH=amd64 CGO_ENABLED=1 \
 	CGO_LDFLAGS='-libverbs' \
-	go build -ldflags '$(LDFLAGS) -linkmode external -extldflags -static' \
-		-o $(FREEBSD_AMD64_S_NAME) ./cmd/udp-proxy-2020/...
+	go build -pgo=./cpu.pprof.go.1.22.4 -ldflags '$(LDFLAGS) -linkmode external -extldflags -static' \
+		-trimpath -o $(FREEBSD_AMD64_S_NAME) ./cmd/udp-proxy-2020/...
 	@echo "Created: $(FREEBSD_AMD64_S_NAME)"
 
 $(FREEBSD_ARM64_S_NAME): .freebsd-aarch64-cross
@@ -350,3 +352,6 @@ package: linux-amd64 linux-arm  ## Build deb/rpm packages
 	docker run --rm \
 		-v $$(pwd)/dist:/root/dist \
 		-e VERSION=$(PROJECT_VERSION) udp-proxy-2020-builder:latest
+
+prof:
+	curl -o trace.out http://localhost:6060/debug/pprof/trace?seconds=5

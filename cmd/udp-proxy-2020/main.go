@@ -6,7 +6,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -202,34 +201,34 @@ func parseArgs() CLI {
 		log.Fatal().Msg("please specify one or more --port")
 	}
 
-	var writer log.Writer
-	switch {
-	case cli.Logfile != "stderr":
-		writer = &log.FileWriter{
-			Filename:     cli.Logfile,
-			MaxSize:      500 * 1024 * 1024,
-			FileMode:     0600,
-			MaxBackups:   7,
-			EnsureFolder: true,
-			LocalTime:    true,
-			Cleaner: func(filename string, _ int, matches []os.FileInfo) {
-				dir := filepath.Dir(filename)
-				var total int64
-				for i := len(matches) - 1; i >= 0; i-- {
-					total += matches[i].Size()
-					if total > 5*1024*1024*1024 {
-						os.Remove(filepath.Join(dir, matches[i].Name()))
-					}
-				}
-			},
-		}
-	default:
-		writer = &log.ConsoleWriter{
-			ColorOutput:    true,
-			QuoteString:    true,
-			EndWithMessage: true,
-		}
+	// var writer log.Writer
+	// switch {
+	// case cli.Logfile != "stderr":
+	// 	writer = &log.FileWriter{
+	// 		Filename:     cli.Logfile,
+	// 		MaxSize:      500 * 1024 * 1024,
+	// 		FileMode:     0600,
+	// 		MaxBackups:   7,
+	// 		EnsureFolder: true,
+	// 		LocalTime:    true,
+	// 		Cleaner: func(filename string, _ int, matches []os.FileInfo) {
+	// 			dir := filepath.Dir(filename)
+	// 			var total int64
+	// 			for i := len(matches) - 1; i >= 0; i-- {
+	// 				total += matches[i].Size()
+	// 				if total > 5*1024*1024*1024 {
+	// 					os.Remove(filepath.Join(dir, matches[i].Name()))
+	// 				}
+	// 			}
+	// 		},
+	// 	}
+	// default:
+	writer := &log.ConsoleWriter{
+		ColorOutput:    true,
+		QuoteString:    true,
+		EndWithMessage: true,
 	}
+	// }
 
 	log.DefaultLogger = log.Logger{
 		Level:      logLevel,
